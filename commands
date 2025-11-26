@@ -1,5 +1,8 @@
 ===SO101 Computer===
 
+lerobot-calibrate --teleop.type=so101_leader --teleop.port=COM9 --teleop.id=my_so101_leader
+lerobot-calibrate --robot.type=so101_follower --robot.port=COM8 --robot.id=my_so101_follower
+
 python -m lerobot.async_inference.robot_client --server_address 192.168.68.65:8080 --robot.type so101_follower --robot.port COM8 --robot.id my_so101_follower --robot.cameras "{ base_0_rgb: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30, warmup_s: 2, rotation: ROTATE_180}, left_wrist_0_rgb: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30, warmup_s: 2, rotation: ROTATE_180} }" --task "Pick up the blue object." --policy_type pi05 --pretrained_name_or_path lerobot/pi05_base --policy_device cuda --actions_per_chunk 50 --chunk_size_threshold 0.0 --aggregate_fn_name weighted_average --debug_visualize_queue_size True
 
 
@@ -7,6 +10,11 @@ python -m lerobot.async_inference.robot_client --server_address=192.168.68.65:80
 
 
 lerobot-teleoperate --robot.type=so101_follower --robot.port=COM8 --robot.id=my_so101_follower --robot.cameras="{ base_0_rgb: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30, warmup_s: 2, rotation: ROTATE_180}, left_wrist_0_rgb: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30, warmup_s: 2, rotation: ROTATE_180} }" --teleop.type=so101_leader --teleop.port=COM9 --teleop.id=my_so101_leader --display_data=true
+No Camera
+lerobot-teleoperate --robot.type=so101_follower --robot.port=COM8 --robot.id=my_so101_follower --teleop.type=so101_leader --teleop.port=COM9 --teleop.id=my_so101_leader
+
+
+lerobot-record --robot.type=so101_follower --robot.port=COM8 --robot.id=my_so101_follower --robot.cameras="{ base_0_rgb: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30, warmup_s: 2, rotation: ROTATE_180}, left_wrist_0_rgb: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30, warmup_s: 2, rotation: ROTATE_180} }" --teleop.type=so101_leader --teleop.port=COM9 --teleop.id=my_so101_leader --display_data=true --dataset.repo_id="$HF_USER/record-test" --dataset.num_episodes=5 --dataset.single_task="Pick up the blue object"
 
 ===GPU Computer===
 
