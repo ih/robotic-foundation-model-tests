@@ -21,6 +21,9 @@ lerobot-record --robot.type=so101_follower --robot.port=COM8 --robot.id=my_so101
 
 
 huggingface-cli upload $env:HF_USER/record-test C:/record-test --repo-type dataset
+
 ===GPU Computer===
 
 python -m lerobot.async_inference.policy_server --host 0.0.0.0 --port 8080
+
+lerobot-train --dataset.repo_id irvinh/record-test --policy.type pi05 --policy.pretrained_path "C:/Models/pi05_base" --output_dir ./outputs/pi05_ft --job_name pi05_ft_smoke --policy.device cuda --policy.dtype bfloat16 --policy.gradient_checkpointing true --policy.compile_model true --steps 200 --policy.scheduler_decay_steps 200 --batch_size 2 --wandb.enable false --policy.push_to_hub=false
