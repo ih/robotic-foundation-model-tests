@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_policy_single_action"
+version = "0.1.0"
+description = "Single-action episode policy for LeRobot SO-101 arm VLM training data generation"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["lerobot", "robotics", "policy", "so101", "vlm"]
+dependencies = [
+    "torch>=2.0.0",
+    "numpy",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
