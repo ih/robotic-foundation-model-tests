@@ -13,7 +13,7 @@ python -m lerobot.async_inference.robot_client --server_address 192.168.68.65:80
 python -m lerobot.async_inference.robot_client --server_address=192.168.68.65:8080 --robot.type=so101_follower --robot.port=COM8 --robot.id=my_so101_follower --robot.cameras="{ base_0_rgb: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, left_wrist_0_rgb: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30}}" --task="Place the red cube onto the plate" --policy_type=smolvla --pretrained_name_or_path=lerobot/smolvla_base --policy_device=cuda --actions_per_chunk=50 --chunk_size_threshold=0.6 --aggregate_fn_name=weighted_average --debug_visualize_queue_size=True
 
 // run inference with fine tuned pi05_base
-python -m lerobot.async_inference.robot_client --server_address 192.168.68.65:8080 --robot.type so101_follower --robot.port COM8 --robot.id my_so101_follower --robot.cameras "{ base_0_rgb: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 60}, left_wrist_0_rgb: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 60}}" --task "Pick up the blue object." --policy_type pi05 --pretrained_name_or_path "C:/Projects/robotic-foundation-model-tests/outputs/pi05_ft/checkpoints/000200/pretrained_model" --policy_device cuda --actions_per_chunk 50 --chunk_size_threshold 0.0 --aggregate_fn_name weighted_average
+python -m lerobot.async_inference.robot_client --server_address 192.168.68.65:8080 --robot.type so101_follower --robot.port COM8 --robot.id my_so101_follower --robot.cameras "{ base_0_rgb: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, left_wrist_0_rgb: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30}}" --task "Pick up the blue object." --policy_type pi05 --pretrained_name_or_path "C:/Projects/robotic-foundation-model-tests/outputs/pi05_ft_10k/checkpoints/last/pretrained_model" --policy_device cuda --actions_per_chunk 50 --chunk_size_threshold 0.0 --aggregate_fn_name weighted_average
 
 
 lerobot-teleoperate --robot.type=so101_follower --robot.port=COM8 --robot.id=my_so101_follower --robot.cameras="{ base_0_rgb: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 60, warmup_s: 2, rotation: ROTATE_180}, left_wrist_0_rgb: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 60, warmup_s: 2, rotation: ROTATE_180} }" --teleop.type=so101_leader --teleop.port=COM9 --teleop.id=my_so101_leader --display_data=true
@@ -25,6 +25,26 @@ lerobot-record --robot.type=so101_follower --robot.port=COM8 --robot.id=my_so101
 
 
 huggingface-cli upload $env:HF_USER/record-test C:/record-test --repo-type dataset
+
+// inference for ACT policy
+
+python -m lerobot.async_inference.robot_client --server_address 192.168.68.65:8080 --robot.type so101_follower --robot.port COM8 --robot.id my_so101_follower --robot.cameras "{ base_0_rgb: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, left_wrist_0_rgb: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30}}" --task "Pick up the blue object." --policy_type act --pretrained_name_or_path "C:/Projects/robotic-foundation-model-tests/outputs/train/act_so101_test/checkpoints/last/pretrained_model" --policy_device cuda --actions_per_chunk 50 --chunk_size_threshold 0.0 --aggregate_fn_name weighted_average
+
+lerobot-record  \
+  --robot.type=so100_follower \
+  --robot.port=/dev/ttyACM1 \
+  --robot.cameras="{ up: {type: opencv, index_or_path: /dev/video10, width: 640, height: 480, fps: 30}, side: {type: intelrealsense, serial_number_or_name: 233522074606, width: 640, height: 480, fps: 30}}" \
+  --robot.id=my_awesome_follower_arm \
+  --display_data=false \
+  --dataset.repo_id=${HF_USER}/eval_so100 \
+  --dataset.single_task="Put lego brick into the transparent box" \
+  --policy.path=${HF_USER}/my_policy
+
+// record single-action shoulder-pan dataset for cosmos training (dataset fps=10)
+python scripts/run_single_action_record.py --robot.type=so101_follower --robot.port=COM8 --robot.id=my_so101_follower --robot.cameras="{ base_0_rgb: {type: opencv, index_or_path: 1, width: 1280, height: 720, fps: 30, warmup_s: 2, rotation: ROTATE_180}, left_wrist_0_rgb: {type: opencv, index_or_path: 0, width: 1280, height: 720, fps: 30, warmup_s: 2, rotation: ROTATE_180} }" --policy.type=single_action --policy.joint_name=shoulder_pan.pos --policy.vary_target_joint=false --policy.position_delta=10.0 --policy.action_duration=1 --dataset.repo_id=irvinh/single-action-shoulder-pan --dataset.num_episodes=50 --dataset.fps=10
+
+// convert single-action-shoulder-pan to vlm dataset for cosmos
+python scripts/convert_to_vlm_dataset.py --dataset-path ~/.cache/huggingface/lerobot/irvinh/single-action-shoulder-pan --output-dir ./vlm_training_data/single-action-shoulder-pan --camera base_0_rgb
 
 ===GPU Computer===
 
