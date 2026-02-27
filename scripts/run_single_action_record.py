@@ -322,6 +322,12 @@ if __name__ == "__main__":
     inject_episode_time()
     inject_reset_time()
 
+    # Inject a placeholder single_task if not provided (required by DatasetRecordConfig,
+    # but overridden per-episode by the patched record_loop)
+    if parse_arg("dataset.single_task") is None:
+        sys.argv.append("--dataset.single_task=single action")
+
+
     # Get robot port and ID
     robot_port = parse_arg("robot.port")
     robot_id = parse_arg("robot.id")

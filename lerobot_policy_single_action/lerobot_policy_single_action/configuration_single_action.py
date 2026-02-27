@@ -62,8 +62,12 @@ class SingleActionConfig(PreTrainedConfig):
 
     # Movement parameters
     position_delta: float = 10.0
-    secondary_position_delta: float = 10.0
-    action_duration: float = 1.0
+    primary_min: float = -60.0
+    primary_max: float = 60.0
+    secondary_position_delta: float = 5.0
+    secondary_min: float = 70.0
+    secondary_max: float = 100.0
+    action_duration: float = 1
 
     # Task description template
     # Available placeholders: {joint_friendly_name}, {direction}, {delta}

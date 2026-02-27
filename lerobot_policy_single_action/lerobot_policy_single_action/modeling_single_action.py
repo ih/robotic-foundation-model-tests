@@ -95,9 +95,6 @@ class SingleActionPolicy(PreTrainedPolicy):
         self._target_position = None
         self._action_applied = False
 
-        # Pick direction randomly (always random regardless of mode)
-        self._current_direction = self._rng.choice(["positive", "negative"])
-
         if self.config.vary_target_joint:
             # Random mode: pick target and secondary from joints pool
             self._current_joint_name = self._rng.choice(self.config.joints)
@@ -115,11 +112,31 @@ class SingleActionPolicy(PreTrainedPolicy):
             self._current_secondary_joint_name = self.config.secondary_joint_name
             self._current_secondary_joint_index = self.config.secondary_joint_index
 
-        # Pick new secondary position
+        # Pick primary direction: force away from bounds if near min/max
+        current_primary_pos = None
+        if self._last_state is not None:
+            current_primary_pos = self._last_state[0, self._current_joint_index].item()
+
+        if current_primary_pos is not None and current_primary_pos >= self.config.primary_max - self.config.position_delta:
+            self._current_direction = "negative"
+        elif current_primary_pos is not None and current_primary_pos <= self.config.primary_min + self.config.position_delta:
+            self._current_direction = "positive"
+        else:
+            self._current_direction = self._rng.choice(["positive", "negative"])
+
+        # Pick new secondary position: force away from bounds if near min/max
         if current_secondary_pos is not None:
             delta = self.config.secondary_position_delta
-            change = self._rng.choice([-delta, delta])
-            self._current_secondary_target = max(-100, min(100, current_secondary_pos + change))
+            if current_secondary_pos >= self.config.secondary_max - delta:
+                change = -delta
+            elif current_secondary_pos <= self.config.secondary_min + delta:
+                change = delta
+            else:
+                change = self._rng.choice([-delta, delta])
+            self._current_secondary_target = max(
+                self.config.secondary_min,
+                min(self.config.secondary_max, current_secondary_pos + change)
+            )
         else:
             # First episode: no position data yet
             self._current_secondary_target = None
@@ -155,7 +172,10 @@ class SingleActionPolicy(PreTrainedPolicy):
                 self._target_position = current_pos + self.config.position_delta
             else:
                 self._target_position = current_pos - self.config.position_delta
-            self._target_position = max(-100, min(100, self._target_position))
+            self._target_position = max(
+                self.config.primary_min,
+                min(self.config.primary_max, self._target_position)
+            )
             self._action_applied = True
 
         # Start with current positions (hold all joints)

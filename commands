@@ -40,6 +40,12 @@ lerobot-record  \
   --dataset.single_task="Put lego brick into the transparent box" \
   --policy.path=${HF_USER}/my_policy
 
+// record single-action shoulder-pan dataset for cosmos training (dataset fps=10)
+python scripts/run_single_action_record.py --robot.type=so101_follower --robot.port=COM8 --robot.id=my_so101_follower --robot.cameras="{ base_0_rgb: {type: opencv, index_or_path: 1, width: 1280, height: 720, fps: 30, warmup_s: 2, rotation: ROTATE_180}, left_wrist_0_rgb: {type: opencv, index_or_path: 0, width: 1280, height: 720, fps: 30, warmup_s: 2, rotation: ROTATE_180} }" --policy.type=single_action --policy.joint_name=shoulder_pan.pos --policy.vary_target_joint=false --policy.position_delta=10.0 --policy.action_duration=1 --dataset.repo_id=irvinh/single-action-shoulder-pan --dataset.num_episodes=50 --dataset.fps=10
+
+// convert single-action-shoulder-pan to vlm dataset for cosmos
+python scripts/convert_to_vlm_dataset.py --dataset-path ~/.cache/huggingface/lerobot/irvinh/single-action-shoulder-pan --output-dir ./vlm_training_data/single-action-shoulder-pan --camera base_0_rgb
+
 ===GPU Computer===
 
 python -m lerobot.async_inference.policy_server --host 0.0.0.0 --port 8080
