@@ -34,3 +34,6 @@ lerobot-train --dataset.repo_id irvinh/record-test --policy.type pi05 --policy.p
 
 
 lerobot-train --dataset.repo_id irvinh/record-pickup-blue-object --policy.type pi05 --policy.pretrained_path "C:/Models/pi05_base" --output_dir ./outputs/pi05_ft_10k --job_name pi05_ft_10k --policy.device cuda --policy.dtype bfloat16 --policy.gradient_checkpointing true --policy.compile_model false --steps 10000 --policy.scheduler_decay_steps 500 --batch_size 2 --wandb.enable false --policy.push_to_hub=false --save_checkpoint true --save_freq 2500
+
+
+lerobot-train --dataset.repo_id=irvinh/record-pickup-blue-object --policy.type=act --output_dir=outputs/train/act_so101_test --job_name=act_so101_test --policy.device=cuda --wandb.enable=true --policy.repo_id=$irvinh/act_so101_test
