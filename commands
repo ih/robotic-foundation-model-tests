@@ -48,6 +48,15 @@ python scripts/convert_to_vlm_dataset.py --dataset-path ~/.cache/huggingface/ler
 
 ===GPU Computer===
 
+// install cosmos reason 2 fine-tuning dependencies
+pip install trl[peft] bitsandbytes "transformers>=4.57.0" qwen-vl-utils tensorboard
+
+// fine-tune cosmos reason 2 on single-action-shoulder-pan (TRL/QLoRA - single GPU)
+python scripts/finetune_cosmos_reason2.py --data-dir ./vlm_training_data/single-action-shoulder-pan --output-dir ./outputs/cosmos_reason2_shoulder_pan_qlora --model nvidia/Cosmos-Reason2-2B --max-steps 200 --batch-size 1 --gradient-accumulation-steps 8 --learning-rate 2e-4 --save-steps 50
+
+// inference with fine-tuned cosmos reason 2
+python scripts/inference_cosmos_reason2.py --model nvidia/Cosmos-Reason2-2B --adapter ./outputs/cosmos_reason2_shoulder_pan_qlora --video ./vlm_training_data/single-action-shoulder-pan/videos/episode_000000.mp4
+
 python -m lerobot.async_inference.policy_server --host 0.0.0.0 --port 8080
 
 lerobot-train --dataset.repo_id irvinh/record-test --policy.type pi05 --policy.pretrained_path "C:/Models/pi05_base" --output_dir ./outputs/pi05_ft --job_name pi05_ft_smoke --policy.device cuda --policy.dtype bfloat16 --policy.gradient_checkpointing true --policy.compile_model true --steps 200 --policy.scheduler_decay_steps 200 --batch_size 2 --wandb.enable false --policy.push_to_hub=false

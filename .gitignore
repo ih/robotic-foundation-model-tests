@@ -48,3 +48,4 @@ htmlcov/
 # Project specific
 logs/
 outputs/
+vlm_training_data/

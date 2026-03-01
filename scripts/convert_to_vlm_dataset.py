@@ -32,9 +32,13 @@ def load_tasks(dataset_path: Path) -> dict:
     df = table.to_pandas()
 
     tasks = {}
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         task_index = row["task_index"]
-        task = row["task"]
+        # Task text may be in a 'task' column or stored as the DataFrame index
+        if "task" in row.index:
+            task = row["task"]
+        else:
+            task = str(idx)
         tasks[task_index] = task
 
     return tasks
