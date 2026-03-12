@@ -227,6 +227,28 @@ def inject_reset_time():
     print(f"Auto-set reset_time_s={reset_time:.1f}s for secondary joint settling")
 
 
+def inject_discrete_action_log_dir():
+    """Inject --policy.discrete_action_log_dir so discrete actions are logged.
+
+    Sets the log directory to meta/discrete_action_logs/ inside the HuggingFace
+    dataset cache, matching where LeRobot stores dataset metadata.
+    """
+    if parse_arg("policy.discrete_action_log_dir") is not None:
+        return
+
+    repo_id = parse_arg("dataset.repo_id")
+    if not repo_id:
+        return
+
+    from pathlib import Path
+    cache_base = Path.home() / ".cache" / "huggingface" / "lerobot"
+    log_dir = cache_base / repo_id / "meta" / "discrete_action_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    sys.argv.append(f"--policy.discrete_action_log_dir={log_dir}")
+    print(f"Discrete action logs: {log_dir}")
+
+
 def _create_motor_bus(robot_port: str, robot_id: str = None):
     """Create a FeetechMotorsBus with SO-101 motor configuration."""
     import json
@@ -321,6 +343,7 @@ if __name__ == "__main__":
 
     inject_episode_time()
     inject_reset_time()
+    inject_discrete_action_log_dir()
 
     # Inject a placeholder single_task if not provided (required by DatasetRecordConfig,
     # but overridden per-episode by the patched record_loop)

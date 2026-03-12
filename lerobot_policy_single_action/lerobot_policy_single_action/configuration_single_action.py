@@ -76,6 +76,10 @@ class SingleActionConfig(PreTrainedConfig):
     # Reproducibility
     random_seed: Optional[int] = None
 
+    # Discrete action logging
+    discrete_action_log_dir: Optional[str] = None
+    discrete_action_log_path: Optional[str] = None
+
     # Required PreTrainedConfig fields
     n_obs_steps: int = 1
     n_action_steps: int = 1

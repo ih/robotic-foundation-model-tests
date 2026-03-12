@@ -6,7 +6,10 @@ Each episode executes a single joint movement:
 - Task description reflects the chosen action
 """
 
+import json
 import random
+import time
+from pathlib import Path
 from typing import Dict, Optional
 
 import torch
@@ -53,6 +56,7 @@ class SingleActionPolicy(PreTrainedPolicy):
         self._target_position: Optional[float] = None
         self._action_applied: bool = False
         self._last_state: Optional[Tensor] = None
+        self._frame_counter: int = 0
 
         # Dummy parameter for device placement
         self._dummy = nn.Parameter(torch.zeros(1), requires_grad=False)
@@ -69,6 +73,42 @@ class SingleActionPolicy(PreTrainedPolicy):
             delta=self.config.position_delta,
         )
 
+    def _write_log_header(self):
+        """Write metadata header to the discrete action log file."""
+        if not self.config.discrete_action_log_path:
+            return
+
+        log_path = Path(self.config.discrete_action_log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        header = {
+            "type": "header",
+            "joint_name": self._current_joint_name or self.config.joint_name,
+            "action_duration": self.config.action_duration,
+            "position_delta": self.config.position_delta,
+            "vary_target_joint": self.config.vary_target_joint,
+            "random_seed": self.config.random_seed,
+            "direction": self._current_direction,
+            "secondary_joint_name": self._current_secondary_joint_name,
+        }
+
+        with open(log_path, "w") as f:
+            f.write(json.dumps(header) + "\n")
+
+    def _log_discrete_action(self, timestamp: float, discrete_action: int,
+                             frame_index: int):
+        """Log a discrete action decision to the log file."""
+        if not self.config.discrete_action_log_path:
+            return
+
+        with open(self.config.discrete_action_log_path, "a") as f:
+            f.write(json.dumps({
+                "type": "action",
+                "timestamp": timestamp,
+                "discrete_action": discrete_action,
+                "frame_index": frame_index,
+            }) + "\n")
+
     def reset(self):
         """Reset for new episode. Picks new target joint, direction, and secondary.
 
@@ -82,6 +122,7 @@ class SingleActionPolicy(PreTrainedPolicy):
             self._secondary_target_locked = False
             self._target_position = None
             self._action_applied = False
+            self._frame_counter = 0
             return
 
         # Read current secondary position before resetting
@@ -94,6 +135,7 @@ class SingleActionPolicy(PreTrainedPolicy):
         # Reset action state
         self._target_position = None
         self._action_applied = False
+        self._frame_counter = 0
 
         if self.config.vary_target_joint:
             # Random mode: pick target and secondary from joints pool
@@ -140,6 +182,28 @@ class SingleActionPolicy(PreTrainedPolicy):
         else:
             # First episode: no position data yet
             self._current_secondary_target = None
+
+        # Set up per-episode discrete action log file
+        if self.config.discrete_action_log_dir:
+            log_dir = Path(self.config.discrete_action_log_dir)
+
+            # Clean up previous header-only (spurious) log file from double-reset
+            prev_path = getattr(self, '_last_log_path', None)
+            if prev_path:
+                prev = Path(prev_path)
+                if prev.exists():
+                    with open(prev) as f:
+                        line_count = sum(1 for _ in f)
+                    if line_count <= 1:  # Header only, no action entries
+                        prev.unlink()
+
+            existing = sorted(log_dir.glob("episode_*.jsonl"))
+            episode_num = len(existing)
+            self.config.discrete_action_log_path = str(
+                log_dir / f"episode_{episode_num:06d}.jsonl"
+            )
+            self._last_log_path = self.config.discrete_action_log_path
+            self._write_log_header()
 
     def get_reset_motor_targets(self) -> dict:
         """Return secondary motor target to command between episodes.
@@ -198,7 +262,29 @@ class SingleActionPolicy(PreTrainedPolicy):
 
     @torch.no_grad()
     def select_action(self, batch: Dict[str, Tensor]) -> Tensor:
-        return self._compute_action(batch)
+        action = self._compute_action(batch)
+
+        # Log discrete action for this frame
+        if self.config.discrete_action_log_path:
+            # Map direction to discrete action: positive=1, negative=2
+            # On first frame the action is applied; subsequent frames are stay (0)
+            # since the target is already set
+            if self._frame_counter == 0:
+                if self._current_direction == "positive":
+                    discrete = 1
+                else:
+                    discrete = 2
+            else:
+                discrete = 0
+
+            self._log_discrete_action(
+                timestamp=time.time(),
+                discrete_action=discrete,
+                frame_index=self._frame_counter,
+            )
+
+        self._frame_counter += 1
+        return action
 
     def forward(self, batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
         device = next(iter(batch.values())).device
