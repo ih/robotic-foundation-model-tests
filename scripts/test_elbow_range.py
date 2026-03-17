@@ -12,7 +12,7 @@ from lerobot.motors.feetech import FeetechMotorsBus
 from lerobot.motors import Motor, MotorNormMode, MotorCalibration
 
 
-def create_bus(port="COM8", robot_id="my_so101_follower"):
+def create_bus(port="COM3", robot_id="my_so101_follower"):
     cal_dir = Path.home() / ".cache" / "huggingface" / "lerobot" / "calibration" / "robots" / "so101_follower"
     cal_path = cal_dir / f"{robot_id}.json"
     calibration = None
@@ -41,7 +41,7 @@ def create_bus(port="COM8", robot_id="my_so101_follower"):
 
 
 def main():
-    port = sys.argv[1] if len(sys.argv) > 1 else "COM8"
+    port = sys.argv[1] if len(sys.argv) > 1 else "COM3"
     robot_id = sys.argv[2] if len(sys.argv) > 2 else "my_so101_follower"
 
     bus = create_bus(port, robot_id)

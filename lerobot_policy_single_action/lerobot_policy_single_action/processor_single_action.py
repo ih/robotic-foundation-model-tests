@@ -4,10 +4,12 @@ Creates identity (passthrough) pre/post processors since this is a non-learned
 policy that works directly with absolute joint positions.
 """
 
-from lerobot.policies.factory import (
+from lerobot.processor import (
     PolicyProcessorPipeline,
     batch_to_transition,
     transition_to_batch,
+)
+from lerobot.processor.converters import (
     policy_action_to_transition,
     transition_to_policy_action,
 )

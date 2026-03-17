@@ -64,10 +64,12 @@ class SingleActionConfig(PreTrainedConfig):
     position_delta: float = 10.0
     primary_min: float = -60.0
     primary_max: float = 60.0
-    secondary_position_delta: float = 5.0
-    secondary_min: float = 70.0
-    secondary_max: float = 100.0
+    secondary_position_delta: float = 10.0
+    secondary_min: float = 50.0
+    secondary_max: float = 90.0
     action_duration: float = 1
+    start_buffer: float = 1.0
+    end_buffer: float = 1.0
 
     # Task description template
     # Available placeholders: {joint_friendly_name}, {direction}, {delta}
@@ -138,6 +140,10 @@ class SingleActionConfig(PreTrainedConfig):
             raise ValueError("secondary_position_delta must be positive")
         if self.action_duration <= 0:
             raise ValueError("action_duration must be positive")
+        if self.start_buffer < 0:
+            raise ValueError("start_buffer must be non-negative")
+        if self.end_buffer < 0:
+            raise ValueError("end_buffer must be non-negative")
 
     def get_optimizer_preset(self):
         return None

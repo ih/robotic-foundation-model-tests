@@ -5,7 +5,7 @@ Usage: python scripts/test_joint_range.py [joint_name] [port] [robot_id]
 Examples:
   python scripts/test_joint_range.py elbow_flex
   python scripts/test_joint_range.py shoulder_pan
-  python scripts/test_joint_range.py wrist_flex COM8 my_so101_follower
+  python scripts/test_joint_range.py wrist_flex COM3 my_so101_follower
 
 Available joints: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
 
@@ -23,7 +23,7 @@ from lerobot.motors import Motor, MotorNormMode, MotorCalibration
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
 
-def create_bus(port="COM8", robot_id="my_so101_follower"):
+def create_bus(port="COM3", robot_id="my_so101_follower"):
     cal_dir = Path.home() / ".cache" / "huggingface" / "lerobot" / "calibration" / "robots" / "so101_follower"
     cal_path = cal_dir / f"{robot_id}.json"
     calibration = None
@@ -53,7 +53,7 @@ def create_bus(port="COM8", robot_id="my_so101_follower"):
 
 def main():
     joint = sys.argv[1] if len(sys.argv) > 1 else "elbow_flex"
-    port = sys.argv[2] if len(sys.argv) > 2 else "COM8"
+    port = sys.argv[2] if len(sys.argv) > 2 else "COM3"
     robot_id = sys.argv[3] if len(sys.argv) > 3 else "my_so101_follower"
 
     if joint not in JOINTS:

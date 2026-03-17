@@ -55,11 +55,20 @@ class SingleActionPolicy(PreTrainedPolicy):
         # Action computation state
         self._target_position: Optional[float] = None
         self._action_applied: bool = False
+        self._action_just_applied: bool = False
         self._last_state: Optional[Tensor] = None
         self._frame_counter: int = 0
+        self._episode_start_time: Optional[float] = None
+
+        # Starting positions for drift correction of inactive joints
+        self._starting_positions: Optional[Dict[str, float]] = None
 
         # Dummy parameter for device placement
         self._dummy = nn.Parameter(torch.zeros(1), requires_grad=False)
+
+    def set_starting_positions(self, positions: Dict[str, float]):
+        """Store starting positions for resetting inactive joints between episodes."""
+        self._starting_positions = positions
 
     @property
     def current_task_description(self) -> str:
@@ -123,6 +132,7 @@ class SingleActionPolicy(PreTrainedPolicy):
             self._target_position = None
             self._action_applied = False
             self._frame_counter = 0
+            self._episode_start_time = None
             return
 
         # Read current secondary position before resetting
@@ -136,6 +146,7 @@ class SingleActionPolicy(PreTrainedPolicy):
         self._target_position = None
         self._action_applied = False
         self._frame_counter = 0
+        self._episode_start_time = None
 
         if self.config.vary_target_joint:
             # Random mode: pick target and secondary from joints pool
@@ -186,6 +197,7 @@ class SingleActionPolicy(PreTrainedPolicy):
         # Set up per-episode discrete action log file
         if self.config.discrete_action_log_dir:
             log_dir = Path(self.config.discrete_action_log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
 
             # Clean up previous header-only (spurious) log file from double-reset
             prev_path = getattr(self, '_last_log_path', None)
@@ -206,15 +218,35 @@ class SingleActionPolicy(PreTrainedPolicy):
             self._write_log_header()
 
     def get_reset_motor_targets(self) -> dict:
-        """Return secondary motor target to command between episodes.
+        """Return motor targets to command between episodes.
+
+        Includes:
+        - Secondary joint at its new random target
+        - All non-active joints reset to starting positions (corrects drift)
 
         Called by the recording script's reset-phase patch to physically move
-        the secondary joint before the next episode begins recording.
+        joints before the next episode begins recording.
         """
-        if self._current_secondary_target is None:
-            return {}
-        motor_name = self._current_secondary_joint_name.replace(".pos", "")
-        return {motor_name: self._current_secondary_target}
+        targets = {}
+
+        # Secondary joint target
+        if self._current_secondary_target is not None:
+            motor_name = self._current_secondary_joint_name.replace(".pos", "")
+            targets[motor_name] = self._current_secondary_target
+
+        # Reset inactive joints to starting positions
+        if self._starting_positions:
+            active_motor_names = set()
+            if self._current_joint_name:
+                active_motor_names.add(self._current_joint_name.replace(".pos", ""))
+            if self._current_secondary_joint_name:
+                active_motor_names.add(self._current_secondary_joint_name.replace(".pos", ""))
+
+            for motor_name, start_pos in self._starting_positions.items():
+                if motor_name not in active_motor_names:
+                    targets[motor_name] = start_pos
+
+        return targets
 
     def _compute_action(self, batch: Dict[str, Tensor]) -> Tensor:
         """Execute the single action for this episode.
@@ -229,7 +261,22 @@ class SingleActionPolicy(PreTrainedPolicy):
 
         self._last_state = state.clone()
 
-        # Compute target on first frame
+        # Track episode start time for start buffer
+        if self._episode_start_time is None:
+            self._episode_start_time = time.time()
+
+        # Reset per-frame flag
+        self._action_just_applied = False
+
+        # During start buffer, hold current positions
+        elapsed = time.time() - self._episode_start_time
+        if elapsed < self.config.start_buffer:
+            action = state.clone()
+            if self._current_secondary_target is not None:
+                action[:, self._current_secondary_joint_index] = self._current_secondary_target
+            return action
+
+        # Compute target on first frame after start buffer
         if not self._action_applied:
             current_pos = state[0, self._current_joint_index].item()
             if self._current_direction == "positive":
@@ -241,6 +288,7 @@ class SingleActionPolicy(PreTrainedPolicy):
                 min(self.config.primary_max, self._target_position)
             )
             self._action_applied = True
+            self._action_just_applied = True
 
         # Start with current positions (hold all joints)
         action = state.clone()
@@ -267,9 +315,9 @@ class SingleActionPolicy(PreTrainedPolicy):
         # Log discrete action for this frame
         if self.config.discrete_action_log_path:
             # Map direction to discrete action: positive=1, negative=2
-            # On first frame the action is applied; subsequent frames are stay (0)
-            # since the target is already set
-            if self._frame_counter == 0:
+            # The action is applied on the first frame after the start buffer.
+            # _action_just_applied is set by _compute_action on that frame only.
+            if self._action_just_applied:
                 if self._current_direction == "positive":
                     discrete = 1
                 else:

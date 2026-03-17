@@ -12,32 +12,46 @@ Wraps lerobot-record with:
 import sys
 import logging
 
-# Patch camera backend to use DSHOW on Windows (before importing camera modules)
+# Windows camera patches (DSHOW backend is now set via camera config `backend: DSHOW`)
 import platform
 if platform.system() == "Windows":
     import cv2
-    import lerobot.cameras.utils as cam_utils
 
-    _original_get_cv2_backend = cam_utils.get_cv2_backend
-
-    def _patched_get_cv2_backend():
-        """Use DSHOW instead of MSMF on Windows for better camera compatibility."""
-        if platform.system() == "Windows":
-            return int(cv2.CAP_DSHOW)
-        return _original_get_cv2_backend()
-
-    cam_utils.get_cv2_backend = _patched_get_cv2_backend
-
-    # Patch async_read to use synchronous read on Windows (threading issues with DSHOW)
+    # In lerobot 0.5.0, both read() and async_read() rely on a background thread.
+    # DSHOW on Windows has threading issues, so we disable the thread entirely and
+    # make all reads synchronous via _read_from_hardware().
     from lerobot.cameras.opencv.camera_opencv import OpenCVCamera
 
-    _original_async_read = OpenCVCamera.async_read
+    # Disable background read thread
+    OpenCVCamera._start_read_thread = lambda self: None
+
+    import time as _cam_time
+
+    def _sync_capture(self):
+        """Capture a frame synchronously and update internal state."""
+        raw_frame = self._read_from_hardware()
+        processed = self._postprocess_image(raw_frame)
+        with self.frame_lock:
+            self.latest_frame = processed
+            self.latest_timestamp = _cam_time.perf_counter()
+        return processed
 
     def _patched_async_read(self, timeout_ms: float = 200):
-        """Use synchronous read on Windows to avoid threading issues with DSHOW."""
-        return self.read()
+        """Direct synchronous read — avoids DSHOW threading issues on Windows."""
+        return self._sync_capture()
 
+    def _patched_read(self, color_mode=None):
+        """Synchronous read bypassing thread-alive check for Windows DSHOW."""
+        return self._sync_capture()
+
+    def _patched_read_latest(self, max_age_ms: int = 500):
+        """Synchronous read_latest — no background thread on Windows DSHOW."""
+        return self._sync_capture()
+
+    OpenCVCamera._sync_capture = _sync_capture
     OpenCVCamera.async_read = _patched_async_read
+    OpenCVCamera.read = _patched_read
+    OpenCVCamera.read_latest = _patched_read_latest
 
 # Import custom policy to trigger registration before lerobot parses args
 from lerobot_policy_single_action.configuration_single_action import SingleActionConfig  # noqa: F401
@@ -103,6 +117,16 @@ def _patched_record_loop(*args, **kwargs):
         if 'policy' not in _reset_state:
             policy.reset()
             policy._secondary_target_locked = True
+            # Capture starting positions from robot.bus for drift correction.
+            # Using robot.bus ensures the same normalization as reset writes.
+            robot = kwargs.get('robot')
+            if robot is not None and hasattr(robot, 'bus'):
+                try:
+                    sp = robot.bus.sync_read("Present_Position")
+                    policy.set_starting_positions(sp)
+                    logging.info(f"Captured starting positions for drift correction: {sp}")
+                except Exception as e:
+                    logging.warning(f"Could not capture starting positions: {e}")
         _reset_state['policy'] = policy
 
         # Override single_task with per-episode task description.
@@ -201,17 +225,23 @@ def check_and_clean_dataset_cache():
 
 
 def inject_episode_time():
-    """Auto-calculate episode_time_s from action_duration + buffer."""
+    """Auto-calculate episode_time_s from start_buffer + action_duration + end_buffer."""
     if parse_arg("dataset.episode_time_s") is not None:
         return
 
     action_duration_str = parse_arg("policy.action_duration")
     action_duration = float(action_duration_str) if action_duration_str else 1.0
 
-    episode_time = action_duration + 3.0
+    start_buffer_str = parse_arg("policy.start_buffer")
+    start_buffer = float(start_buffer_str) if start_buffer_str else 1.0
+
+    end_buffer_str = parse_arg("policy.end_buffer")
+    end_buffer = float(end_buffer_str) if end_buffer_str else 1.0
+
+    episode_time = start_buffer + action_duration + end_buffer
     sys.argv.append(f"--dataset.episode_time_s={episode_time}")
     print(f"Auto-calculated episode time: {episode_time:.1f}s "
-          f"({action_duration}s action + 3s buffer)")
+          f"({start_buffer}s start + {action_duration}s action + {end_buffer}s end)")
 
 
 def inject_reset_time():
@@ -243,7 +273,6 @@ def inject_discrete_action_log_dir():
     from pathlib import Path
     cache_base = Path.home() / ".cache" / "huggingface" / "lerobot"
     log_dir = cache_base / repo_id / "meta" / "discrete_action_logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
 
     sys.argv.append(f"--policy.discrete_action_log_dir={log_dir}")
     print(f"Discrete action logs: {log_dir}")
