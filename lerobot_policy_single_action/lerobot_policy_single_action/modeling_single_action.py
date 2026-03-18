@@ -75,6 +75,8 @@ class SingleActionPolicy(PreTrainedPolicy):
         """Natural language description of this episode's action."""
         if self._current_joint_name is None:
             return "Idle"
+        if self._current_direction == "none":
+            return "No movement"
         friendly = self._current_joint_name.replace(".pos", "").replace("_", " ")
         return self.config.task_template.format(
             joint_friendly_name=friendly,
@@ -175,7 +177,10 @@ class SingleActionPolicy(PreTrainedPolicy):
         elif current_primary_pos is not None and current_primary_pos <= self.config.primary_min + self.config.position_delta:
             self._current_direction = "positive"
         else:
-            self._current_direction = self._rng.choice(["positive", "negative"])
+            directions = ["positive", "negative"]
+            if self.config.include_no_movement:
+                directions.append("none")
+            self._current_direction = self._rng.choice(directions)
 
         # Pick new secondary position: force away from bounds if near min/max
         if current_secondary_pos is not None:
@@ -278,15 +283,19 @@ class SingleActionPolicy(PreTrainedPolicy):
 
         # Compute target on first frame after start buffer
         if not self._action_applied:
-            current_pos = state[0, self._current_joint_index].item()
-            if self._current_direction == "positive":
-                self._target_position = current_pos + self.config.position_delta
+            if self._current_direction == "none":
+                # No movement: hold primary joint at current position
+                self._target_position = None
             else:
-                self._target_position = current_pos - self.config.position_delta
-            self._target_position = max(
-                self.config.primary_min,
-                min(self.config.primary_max, self._target_position)
-            )
+                current_pos = state[0, self._current_joint_index].item()
+                if self._current_direction == "positive":
+                    self._target_position = current_pos + self.config.position_delta
+                else:
+                    self._target_position = current_pos - self.config.position_delta
+                self._target_position = max(
+                    self.config.primary_min,
+                    min(self.config.primary_max, self._target_position)
+                )
             self._action_applied = True
             self._action_just_applied = True
 
@@ -314,14 +323,16 @@ class SingleActionPolicy(PreTrainedPolicy):
 
         # Log discrete action for this frame
         if self.config.discrete_action_log_path:
-            # Map direction to discrete action: positive=1, negative=2
+            # Map direction to discrete action: positive=1, negative=2, none=3
             # The action is applied on the first frame after the start buffer.
             # _action_just_applied is set by _compute_action on that frame only.
             if self._action_just_applied:
                 if self._current_direction == "positive":
                     discrete = 1
-                else:
+                elif self._current_direction == "negative":
                     discrete = 2
+                else:
+                    discrete = 3  # no movement
             else:
                 discrete = 0
 

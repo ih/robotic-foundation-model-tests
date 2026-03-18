@@ -60,6 +60,9 @@ class SingleActionConfig(PreTrainedConfig):
     vary_target_joint: bool = False
     joints: List[str] = field(default_factory=lambda: list(SO101_JOINTS))
 
+    # No-movement action
+    include_no_movement: bool = True
+
     # Movement parameters
     position_delta: float = 10.0
     primary_min: float = -60.0
