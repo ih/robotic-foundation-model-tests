@@ -6,7 +6,7 @@ between episodes for visual diversity.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from lerobot.configs.policies import PreTrainedConfig
 
@@ -20,6 +20,24 @@ SO101_JOINTS = [
     "wrist_roll.pos",
     "gripper.pos",
 ]
+
+# Previous ranges (RANGE_M100_100 units, not degrees):
+# DEFAULT_JOINT_RANGES: Dict[str, Tuple[float, float]] = {
+#     "shoulder_pan.pos":  (-90.0, 90.0),
+#     "shoulder_lift.pos": (-100.0, 40.0),
+#     "elbow_flex.pos":    (-90.0, 0.0),
+#     "wrist_flex.pos":    (-50.0, 50.0),
+#     "wrist_roll.pos":    (-100.0, 100.0),
+#     "gripper.pos":       (10.0, 100.0),
+# }
+DEFAULT_JOINT_RANGES: Dict[str, Tuple[float, float]] = {
+    "shoulder_pan.pos":  (-60.0, 60.0),
+    "shoulder_lift.pos": (-100.0, -60.0),
+    "elbow_flex.pos":    (50.0, 96.0),
+    "wrist_flex.pos":    (-96.0, 96.0),
+    "wrist_roll.pos":    (-91.0, 91.0),
+    "gripper.pos":       (-63.0, 63.0),
+}
 
 
 @PreTrainedConfig.register_subclass("single_action")
@@ -55,9 +73,11 @@ class SingleActionConfig(PreTrainedConfig):
     # Fixed joint mode (default)
     joint_name: str = "shoulder_pan.pos"
     secondary_joint_name: str = "elbow_flex.pos"
+    tertiary_joint_name: Optional[str] = None
 
     # Random joint mode
     vary_target_joint: bool = False
+    randomize_all_joints_on_reset: bool = False
     joints: List[str] = field(default_factory=lambda: list(SO101_JOINTS))
 
     # No-movement action
@@ -65,14 +85,15 @@ class SingleActionConfig(PreTrainedConfig):
 
     # Movement parameters
     position_delta: float = 10.0
-    primary_min: float = -60.0
-    primary_max: float = 60.0
     secondary_position_delta: float = 10.0
-    secondary_min: float = 50.0
-    secondary_max: float = 90.0
+    joint_ranges: Dict[str, Tuple[float, float]] = field(
+        default_factory=lambda: dict(DEFAULT_JOINT_RANGES)
+    )
     action_duration: float = 1
     start_buffer: float = 1.0
     end_buffer: float = 1.0
+    reset_position_tolerance: float = 5.0
+    max_reset_retries: int = 3
 
     # Task description template
     # Available placeholders: {joint_friendly_name}, {direction}, {delta}
@@ -105,9 +126,15 @@ class SingleActionConfig(PreTrainedConfig):
     # Computed fields
     joint_index: int = field(init=False, default=0)
     secondary_joint_index: int = field(init=False, default=0)
+    tertiary_joint_index: int = field(init=False, default=0)
 
     def __post_init__(self):
         super().__post_init__()
+
+        if self.randomize_all_joints_on_reset and not self.vary_target_joint:
+            raise ValueError(
+                "randomize_all_joints_on_reset requires vary_target_joint=True"
+            )
 
         if self.vary_target_joint:
             # Random mode: validate joints list
@@ -116,9 +143,11 @@ class SingleActionConfig(PreTrainedConfig):
                     raise ValueError(
                         f"Unknown joint '{joint}'. Valid joints: {SO101_JOINTS}"
                     )
-            if len(self.joints) < 2:
+            min_joints = 3 if self.tertiary_joint_name else 2
+            if len(self.joints) < min_joints:
                 raise ValueError(
-                    "At least 2 joints required (need distinct target and secondary)"
+                    f"At least {min_joints} joints required (need distinct target"
+                    f" and diversity joints)"
                 )
         else:
             # Fixed mode: validate specific joints
@@ -131,8 +160,20 @@ class SingleActionConfig(PreTrainedConfig):
                     f"Unknown secondary joint '{self.secondary_joint_name}'. "
                     f"Valid joints: {SO101_JOINTS}"
                 )
-            if self.joint_name == self.secondary_joint_name:
+            fixed_joints = {self.joint_name, self.secondary_joint_name}
+            if len(fixed_joints) < 2:
                 raise ValueError("Primary and secondary joints must be different")
+            if self.tertiary_joint_name is not None:
+                if self.tertiary_joint_name not in SO101_JOINTS:
+                    raise ValueError(
+                        f"Unknown tertiary joint '{self.tertiary_joint_name}'. "
+                        f"Valid joints: {SO101_JOINTS}"
+                    )
+                if self.tertiary_joint_name in fixed_joints:
+                    raise ValueError(
+                        "Tertiary joint must be different from primary and secondary"
+                    )
+                self.tertiary_joint_index = SO101_JOINTS.index(self.tertiary_joint_name)
             self.joint_index = SO101_JOINTS.index(self.joint_name)
             self.secondary_joint_index = SO101_JOINTS.index(self.secondary_joint_name)
 
@@ -147,6 +188,15 @@ class SingleActionConfig(PreTrainedConfig):
             raise ValueError("start_buffer must be non-negative")
         if self.end_buffer < 0:
             raise ValueError("end_buffer must be non-negative")
+        for joint_name, (lo, hi) in self.joint_ranges.items():
+            if lo >= hi:
+                raise ValueError(
+                    f"Invalid range for {joint_name}: min ({lo}) must be < max ({hi})"
+                )
+
+    def get_joint_range(self, joint_name: str) -> Tuple[float, float]:
+        """Return (min, max) for the given joint, falling back to (-60, 60)."""
+        return self.joint_ranges.get(joint_name, (-60.0, 60.0))
 
     def get_optimizer_preset(self):
         return None

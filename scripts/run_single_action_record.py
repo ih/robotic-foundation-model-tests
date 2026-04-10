@@ -11,6 +11,13 @@ Wraps lerobot-record with:
 
 import sys
 import logging
+import types
+
+# Block broken groot policy import (dataclass ordering bug in lerobot 0.5.0 + Python 3.12)
+_groot_cfg = types.ModuleType("lerobot.policies.groot.configuration_groot")
+_groot_cfg.GrootConfig = type("GrootConfig", (), {})
+sys.modules["lerobot.policies.groot"] = types.ModuleType("lerobot.policies.groot")
+sys.modules["lerobot.policies.groot.configuration_groot"] = _groot_cfg
 
 # Windows camera patches (DSHOW backend is now set via camera config `backend: DSHOW`)
 import platform
@@ -113,10 +120,10 @@ def _patched_record_loop(*args, **kwargs):
         # On the very first episode, reset() hasn't been called yet (no reset phase
         # before episode 0). Call it here so the policy picks its first action.
         # For subsequent episodes, the reset-phase patch already called reset() and
-        # set _secondary_target_locked=True, so this reset() will be a no-op.
+        # set _diversity_targets_locked=True, so this reset() will be a no-op.
         if 'policy' not in _reset_state:
             policy.reset()
-            policy._secondary_target_locked = True
+            policy._diversity_targets_locked = True
             # Capture starting positions from robot.bus for drift correction.
             # Using robot.bus ensures the same normalization as reset writes.
             robot = kwargs.get('robot')
@@ -131,7 +138,7 @@ def _patched_record_loop(*args, **kwargs):
 
         # Override single_task with per-episode task description.
         # This runs after our reset(), so current_task_description is valid.
-        # record_loop will call reset() again internally, but _secondary_target_locked
+        # record_loop will call reset() again internally, but _diversity_targets_locked
         # makes that a no-op (preserves joint, direction, secondary target).
         if hasattr(policy, 'current_task_description'):
             task = policy.current_task_description
@@ -148,25 +155,55 @@ def _patched_record_loop(*args, **kwargs):
             motor_targets = stored_policy.get_reset_motor_targets()
 
             if motor_targets and robot is not None and hasattr(robot, 'bus'):
-                try:
-                    robot.bus.sync_write("Goal_Position", motor_targets)
-                    logging.info(
-                        f"Reset: commanding {motor_targets}, "
-                        f"waiting {control_time_s:.1f}s to settle"
-                    )
-                except Exception as e:
-                    logging.warning(f"Reset servo command failed: {e}")
+                max_retries = getattr(stored_policy.config, 'max_reset_retries', 3)
+                for attempt in range(max_retries + 1):
+                    try:
+                        robot.bus.sync_write("Goal_Position", motor_targets)
+                        label = "Reset" if attempt == 0 else f"Reset retry {attempt}"
+                        logging.info(
+                            f"{label}: commanding {motor_targets}, "
+                            f"waiting {control_time_s:.1f}s to settle"
+                        )
+                    except Exception as e:
+                        logging.warning(f"Reset servo command failed: {e}")
+                        break
+
+                    _time_module.sleep(control_time_s)
+
+                    # Verify positions reached
+                    try:
+                        actual = robot.bus.sync_read("Present_Position")
+                        corrected = stored_policy.verify_reset_position(actual)
+                        if not corrected:
+                            logging.info("Reset positions verified OK")
+                            break
+                        else:
+                            logging.warning(
+                                f"Reset position error detected: {corrected}. "
+                                f"Accepting actual positions."
+                            )
+                            # Targets already updated by verify_reset_position,
+                            # re-read targets for next attempt
+                            motor_targets = stored_policy.get_reset_motor_targets()
+                            if attempt == max_retries:
+                                logging.warning(
+                                    f"Max reset retries ({max_retries}) reached, "
+                                    f"proceeding with current positions"
+                                )
+                    except Exception as e:
+                        logging.warning(f"Could not verify reset positions: {e}")
+                        break
 
             # Lock target so next episode's reset() preserves it
-            stored_policy._secondary_target_locked = True
+            stored_policy._diversity_targets_locked = True
 
             # Log upcoming episode info
             if hasattr(stored_policy, 'current_task_description'):
                 logging.info(f"Next episode: {stored_policy.current_task_description}")
         else:
             logging.info(f"Reset phase: waiting {control_time_s:.1f}s...")
+            _time_module.sleep(control_time_s)
 
-        _time_module.sleep(control_time_s)
         return
 
     return _original_record_loop(*args, **kwargs)

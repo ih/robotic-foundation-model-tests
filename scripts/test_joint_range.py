@@ -9,7 +9,7 @@ Examples:
 
 Available joints: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
 
-Type a number (-100 to 100) to move the joint to that position.
+Type a number (in degrees) to move the joint to that position.
 Type 'q' to quit and return to starting position.
 """
 import sys
@@ -38,12 +38,12 @@ def create_bus(port="COM3", robot_id="my_so101_follower"):
     bus = FeetechMotorsBus(
         port=port,
         motors={
-            "shoulder_pan": Motor(1, "sts3215", MotorNormMode.RANGE_M100_100),
-            "shoulder_lift": Motor(2, "sts3215", MotorNormMode.RANGE_M100_100),
-            "elbow_flex": Motor(3, "sts3215", MotorNormMode.RANGE_M100_100),
-            "wrist_flex": Motor(4, "sts3215", MotorNormMode.RANGE_M100_100),
-            "wrist_roll": Motor(5, "sts3215", MotorNormMode.RANGE_M100_100),
-            "gripper": Motor(6, "sts3215", MotorNormMode.RANGE_0_100),
+            "shoulder_pan": Motor(1, "sts3215", MotorNormMode.DEGREES),
+            "shoulder_lift": Motor(2, "sts3215", MotorNormMode.DEGREES),
+            "elbow_flex": Motor(3, "sts3215", MotorNormMode.DEGREES),
+            "wrist_flex": Motor(4, "sts3215", MotorNormMode.DEGREES),
+            "wrist_roll": Motor(5, "sts3215", MotorNormMode.DEGREES),
+            "gripper": Motor(6, "sts3215", MotorNormMode.DEGREES),
         },
         calibration=calibration,
     )
@@ -64,10 +64,12 @@ def main():
 
     positions = bus.sync_read("Present_Position")
     start_pos = positions[joint]
+    # Hold all other joints at their current positions
+    hold_positions = {j: positions[j] for j in JOINTS if j != joint}
     print(f"All positions: {positions}")
     print(f"Starting {joint}: {start_pos:.1f}")
     print()
-    print(f"Enter a number (-100 to 100) to move {joint} to that position.")
+    print(f"Enter a number (in degrees) to move {joint} to that position.")
     print("Type 'q' to quit and return to starting position.")
     print()
 
@@ -82,17 +84,23 @@ def main():
                 print("  Invalid input. Enter a number or 'q'.")
                 continue
 
-            if target < -100 or target > 100:
-                print("  Out of range. Must be -100 to 100.")
+            if target < -180 or target > 180:
+                print("  Out of range. Must be -180 to 180.")
                 continue
 
-            bus.sync_write("Goal_Position", {joint: target})
+            # Write target joint + hold all others at their positions
+            goal = dict(hold_positions)
+            goal[joint] = target
+            bus.sync_write("Goal_Position", goal)
             time.sleep(1.5)
             actual = bus.sync_read("Present_Position")
             print(f"  Commanded: {target:.1f}  Actual: {actual[joint]:.1f}")
     finally:
         print(f"\nReturning {joint} to start ({start_pos:.1f})...")
-        bus.sync_write("Goal_Position", {joint: start_pos})
+        # Restore all joints to their original positions
+        restore = dict(hold_positions)
+        restore[joint] = start_pos
+        bus.sync_write("Goal_Position", restore)
         time.sleep(2)
         bus.disconnect()
         print("Done.")
