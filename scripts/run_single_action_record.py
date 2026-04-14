@@ -107,6 +107,44 @@ _reset_state = {}
 # gravity between the caller's `hardware.disconnect()` and subprocess boot.
 _STARTING_POSITIONS_OVERRIDE: dict = {}
 
+# Populated from --probe-script-json=<JSON>: a list of [start_pos, direction]
+# tuples consumed one per episode. Each reset pops the next entry and
+# stamps `_forced_direction` + `_forced_primary_start` on the policy so
+# the following reset() + get_reset_motor_targets() call uses exactly
+# that direction and start position. Used by the learner's VERIFY path
+# to drive error-weighted probes through the same recorder pipeline
+# as EXPLORE.
+_PROBE_SCRIPT_QUEUE: list = []
+
+
+def _apply_next_probe_script_entry(policy) -> None:
+    """Pop the next `(start_pos, direction)` tuple off the probe script
+    queue (if any) and stamp it onto `policy` so the upcoming reset()
+    uses that direction and forced primary-start position instead of
+    random sampling. No-op if the queue is empty.
+    """
+    if not _PROBE_SCRIPT_QUEUE:
+        return
+    try:
+        pos, direction = _PROBE_SCRIPT_QUEUE.pop(0)
+    except (ValueError, IndexError):
+        return
+    try:
+        pos = float(pos)
+    except (TypeError, ValueError):
+        return
+    direction = str(direction)
+    if direction not in ("positive", "negative", "none"):
+        return
+    # Cleared by reset()'s primary-target resample logic; we override
+    # both the direction and the cached primary start on the policy
+    # instance so get_reset_motor_targets() returns our pos.
+    policy._forced_direction = direction
+    policy._forced_primary_start = pos
+    logging.info(
+        f"probe_script: episode uses direction={direction} start_pos={pos}"
+    )
+
 
 def _patched_record_loop(*args, **kwargs):
     """Patch record_loop for single_action policy.
@@ -129,6 +167,7 @@ def _patched_record_loop(*args, **kwargs):
         # For subsequent episodes, the reset-phase patch already called reset() and
         # set _diversity_targets_locked=True, so this reset() will be a no-op.
         if 'policy' not in _reset_state:
+            _apply_next_probe_script_entry(policy)
             policy.reset()
             policy._diversity_targets_locked = True
             # Prefer a caller-provided override (set via --starting-positions-json
@@ -165,6 +204,7 @@ def _patched_record_loop(*args, **kwargs):
         robot = kwargs.get('robot')
 
         if stored_policy is not None and hasattr(stored_policy, 'get_reset_motor_targets'):
+            _apply_next_probe_script_entry(stored_policy)
             stored_policy.reset()
             motor_targets = stored_policy.get_reset_motor_targets()
 
@@ -454,6 +494,28 @@ if __name__ == "__main__":
                 ]
         except (ValueError, TypeError) as e:
             print(f"Warning: could not parse --starting-positions-json: {e}")
+
+    # Probe-script queue: a JSON list of [start_pos, direction] tuples
+    # consumed one per episode. Used by the learner's VERIFY path to
+    # drive error-weighted probes through the recorder without going
+    # through the normal random direction/start-position sampling.
+    probe_raw = parse_arg("probe-script-json")
+    if probe_raw is not None:
+        import json as _json
+        try:
+            parsed = _json.loads(probe_raw)
+            if isinstance(parsed, list):
+                _PROBE_SCRIPT_QUEUE.clear()
+                for entry in parsed:
+                    if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                        _PROBE_SCRIPT_QUEUE.append((float(entry[0]), str(entry[1])))
+                sys.argv = [
+                    a for a in sys.argv
+                    if not a.startswith("--probe-script-json")
+                ]
+                print(f"  probe script loaded: {len(_PROBE_SCRIPT_QUEUE)} entries")
+        except (ValueError, TypeError) as e:
+            print(f"Warning: could not parse --probe-script-json: {e}")
 
     # Capture starting position (or use the override for return-to-start).
     starting_positions = {}

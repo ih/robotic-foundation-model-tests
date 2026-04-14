@@ -173,6 +173,11 @@ class SingleActionPolicy(PreTrainedPolicy):
         self._episode_start_time = None
         self._locked_positions = None
         # Cleared so the new episode re-samples its primary start below.
+        # Note: `_forced_direction` and `_forced_primary_start` (if any)
+        # are NOT cleared here — they are stamped by the recorder hook
+        # immediately before each reset() call, so they must survive this
+        # method. They are explicitly cleared AFTER reset() pops them in
+        # get_reset_motor_targets so the next episode starts fresh.
         self._cached_reset_primary_target: Optional[float] = None
 
         if self.config.vary_target_joint:
@@ -226,7 +231,19 @@ class SingleActionPolicy(PreTrainedPolicy):
             current_primary_pos = self._last_state[0, self._current_joint_index].item()
 
         primary_min, primary_max = self.config.get_joint_range(self._current_joint_name)
-        if current_primary_pos is not None and current_primary_pos >= primary_max - self.config.position_delta:
+        # Per-episode override from the recorder's probe-script queue
+        # (set on the instance by _apply_next_probe_script_entry before
+        # this reset() call). Takes priority over config.force_direction
+        # because it's scoped to a single episode.
+        instance_forced = getattr(self, "_forced_direction", None)
+        forced = getattr(self.config, "force_direction", None)
+        if instance_forced in ("positive", "negative", "none"):
+            self._current_direction = instance_forced
+            # Consume — the recorder hook sets this per-episode.
+            self._forced_direction = None
+        elif forced in ("positive", "negative", "none"):
+            self._current_direction = forced
+        elif current_primary_pos is not None and current_primary_pos >= primary_max - self.config.position_delta:
             self._current_direction = "negative"
         elif current_primary_pos is not None and current_primary_pos <= primary_min + self.config.position_delta:
             self._current_direction = "positive"
@@ -314,13 +331,25 @@ class SingleActionPolicy(PreTrainedPolicy):
             # Cached per reset() so repeat calls (verify + retries) all see the
             # same target — otherwise resampling turns each retry into a chase
             # of a new random pose and the tolerance check never converges.
-            if self.config.randomize_primary_start and self._current_joint_name:
+            #
+            # If the recorder's probe-script hook stamped `_forced_primary_start`
+            # on this instance for the upcoming episode, use that instead of a
+            # new random sample. This is how the learner's VERIFY path drives
+            # error-weighted probes through the recorder pipeline.
+            if self._current_joint_name:
                 motor_name = self._current_joint_name.replace(".pos", "")
-                if getattr(self, "_cached_reset_primary_target", None) is None:
-                    self._cached_reset_primary_target = self._pick_random_position(
-                        self._current_joint_name
-                    )
-                targets[motor_name] = self._cached_reset_primary_target
+                forced_start = getattr(self, "_forced_primary_start", None)
+                if forced_start is not None:
+                    self._cached_reset_primary_target = float(forced_start)
+                    targets[motor_name] = self._cached_reset_primary_target
+                    # Consume — one-shot per episode.
+                    self._forced_primary_start = None
+                elif self.config.randomize_primary_start:
+                    if getattr(self, "_cached_reset_primary_target", None) is None:
+                        self._cached_reset_primary_target = self._pick_random_position(
+                            self._current_joint_name
+                        )
+                    targets[motor_name] = self._cached_reset_primary_target
 
         return targets
 

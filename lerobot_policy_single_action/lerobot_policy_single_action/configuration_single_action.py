@@ -83,6 +83,11 @@ class SingleActionConfig(PreTrainedConfig):
     # No-movement action
     include_no_movement: bool = True
 
+    # Force a specific direction on every reset() instead of random choice.
+    # Valid: None (default random), "positive", "negative", "none".
+    # Used by sanity scripts that need to produce known-direction episodes.
+    force_direction: Optional[str] = None
+
     # Joint locking: hold inactive joints at their episode-start positions
     # to prevent gravity-induced drift during episodes
     lock_inactive_joints: bool = True
