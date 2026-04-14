@@ -100,6 +100,13 @@ _record_mod.sanity_check_dataset_name = lambda *args, **kwargs: None
 _original_record_loop = _record_mod.record_loop
 _reset_state = {}
 
+# Populated from the CLI flag --starting-positions-json=<json> before the
+# recorder starts its first episode. When non-empty, the custom reset hook
+# feeds this dict directly to policy.set_starting_positions() instead of
+# reading live Present_Position — which is stale if the arm drooped under
+# gravity between the caller's `hardware.disconnect()` and subprocess boot.
+_STARTING_POSITIONS_OVERRIDE: dict = {}
+
 
 def _patched_record_loop(*args, **kwargs):
     """Patch record_loop for single_action policy.
@@ -124,10 +131,17 @@ def _patched_record_loop(*args, **kwargs):
         if 'policy' not in _reset_state:
             policy.reset()
             policy._diversity_targets_locked = True
-            # Capture starting positions from robot.bus for drift correction.
-            # Using robot.bus ensures the same normalization as reset writes.
+            # Prefer a caller-provided override (set via --starting-positions-json
+            # on the CLI) so the learner can force a known "home" pose even
+            # after the motor bus was handed off between processes and the
+            # arm drooped under gravity. Otherwise fall back to the live
+            # Present_Position read from robot.bus.
             robot = kwargs.get('robot')
-            if robot is not None and hasattr(robot, 'bus'):
+            override = _STARTING_POSITIONS_OVERRIDE
+            if override:
+                policy.set_starting_positions(dict(override))
+                logging.info(f"Using override starting positions: {override}")
+            elif robot is not None and hasattr(robot, 'bus'):
                 try:
                     sp = robot.bus.sync_read("Present_Position")
                     policy.set_starting_positions(sp)
@@ -421,9 +435,32 @@ if __name__ == "__main__":
     robot_port = parse_arg("robot.port")
     robot_id = parse_arg("robot.id")
 
-    # Capture starting position
+    # Optional caller-provided override: a JSON dict of joint -> position.
+    # When set, it (a) populates the module-global used by the reset hook
+    # and (b) replaces the live-read baseline used by return_arm_to_start.
+    override_raw = parse_arg("starting-positions-json")
+    if override_raw is not None:
+        import json as _json
+        try:
+            parsed = _json.loads(override_raw)
+            if isinstance(parsed, dict):
+                _STARTING_POSITIONS_OVERRIDE = {
+                    str(k): float(v) for k, v in parsed.items()
+                }
+                # Strip the flag so lerobot-record's parser doesn't reject it.
+                sys.argv = [
+                    a for a in sys.argv
+                    if not a.startswith("--starting-positions-json")
+                ]
+        except (ValueError, TypeError) as e:
+            print(f"Warning: could not parse --starting-positions-json: {e}")
+
+    # Capture starting position (or use the override for return-to-start).
     starting_positions = {}
-    if robot_port:
+    if _STARTING_POSITIONS_OVERRIDE:
+        starting_positions = dict(_STARTING_POSITIONS_OVERRIDE)
+        print(f"  Using override starting positions: {starting_positions}")
+    elif robot_port:
         starting_positions = capture_starting_position(robot_port, robot_id)
 
     print_command_line()

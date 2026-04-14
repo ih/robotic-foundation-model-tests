@@ -58,6 +58,9 @@ class SingleActionPolicy(PreTrainedPolicy):
         self._last_state: Optional[Tensor] = None
         self._frame_counter: int = 0
         self._episode_start_time: Optional[float] = None
+        self._locked_positions: Optional[Tensor] = None
+        # Cached random primary-start target per episode; re-sampled at reset().
+        self._cached_reset_primary_target: Optional[float] = None
 
         # Starting positions for drift correction of inactive joints
         self._starting_positions: Optional[Dict[str, float]] = None
@@ -160,6 +163,7 @@ class SingleActionPolicy(PreTrainedPolicy):
             self._action_applied = False
             self._frame_counter = 0
             self._episode_start_time = None
+            self._locked_positions = None
             return
 
         # Reset action state
@@ -167,6 +171,9 @@ class SingleActionPolicy(PreTrainedPolicy):
         self._action_applied = False
         self._frame_counter = 0
         self._episode_start_time = None
+        self._locked_positions = None
+        # Cleared so the new episode re-samples its primary start below.
+        self._cached_reset_primary_target: Optional[float] = None
 
         if self.config.vary_target_joint:
             # Random mode: pick target and diversity joints from pool
@@ -281,10 +288,15 @@ class SingleActionPolicy(PreTrainedPolicy):
                 targets[motor_name] = dj["target"]
 
         if self.config.randomize_all_joints_on_reset:
-            # Also randomize the primary joint's starting position
+            # Also randomize the primary joint's starting position. Cached
+            # per reset() so verify + retries see the same target.
             if self._current_joint_name:
                 motor_name = self._current_joint_name.replace(".pos", "")
-                targets[motor_name] = self._pick_random_position(self._current_joint_name)
+                if getattr(self, "_cached_reset_primary_target", None) is None:
+                    self._cached_reset_primary_target = self._pick_random_position(
+                        self._current_joint_name
+                    )
+                targets[motor_name] = self._cached_reset_primary_target
         else:
             # Reset inactive joints to starting positions
             if self._starting_positions:
@@ -297,6 +309,18 @@ class SingleActionPolicy(PreTrainedPolicy):
                 for motor_name, start_pos in self._starting_positions.items():
                     if motor_name not in active_motor_names:
                         targets[motor_name] = start_pos
+
+            # Randomize primary joint start position for better range coverage.
+            # Cached per reset() so repeat calls (verify + retries) all see the
+            # same target — otherwise resampling turns each retry into a chase
+            # of a new random pose and the tolerance check never converges.
+            if self.config.randomize_primary_start and self._current_joint_name:
+                motor_name = self._current_joint_name.replace(".pos", "")
+                if getattr(self, "_cached_reset_primary_target", None) is None:
+                    self._cached_reset_primary_target = self._pick_random_position(
+                        self._current_joint_name
+                    )
+                targets[motor_name] = self._cached_reset_primary_target
 
         return targets
 
@@ -358,10 +382,15 @@ class SingleActionPolicy(PreTrainedPolicy):
         # Reset per-frame flag
         self._action_just_applied = False
 
-        # During start buffer, hold current positions
+        # During start buffer, hold positions
         elapsed = time.time() - self._episode_start_time
         if elapsed < self.config.start_buffer:
-            action = state.clone()
+            if self.config.lock_inactive_joints:
+                if self._locked_positions is None:
+                    self._locked_positions = state.clone()
+                action = self._locked_positions.clone()
+            else:
+                action = state.clone()
             for dj in self._diversity_joints:
                 if dj["target"] is not None:
                     action[:, dj["index"]] = dj["target"]
@@ -386,8 +415,13 @@ class SingleActionPolicy(PreTrainedPolicy):
             self._action_applied = True
             self._action_just_applied = True
 
-        # Start with current positions (hold all joints)
-        action = state.clone()
+        # Start with locked or current positions (hold all joints)
+        if self.config.lock_inactive_joints:
+            if self._locked_positions is None:
+                self._locked_positions = state.clone()
+            action = self._locked_positions.clone()
+        else:
+            action = state.clone()
 
         # Set target joint
         if self._target_position is not None:
