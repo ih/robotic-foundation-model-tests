@@ -32,7 +32,7 @@ SO101_JOINTS = [
 # }
 DEFAULT_JOINT_RANGES: Dict[str, Tuple[float, float]] = {
     "shoulder_pan.pos":  (-60.0, 60.0),
-    "shoulder_lift.pos": (-100.0, -60.0),
+    "shoulder_lift.pos": (-60.0, -10.0),
     "elbow_flex.pos":    (50.0, 96.0),
     "wrist_flex.pos":    (-96.0, 96.0),
     "wrist_roll.pos":    (-91.0, 91.0),
@@ -82,6 +82,13 @@ class SingleActionConfig(PreTrainedConfig):
 
     # No-movement action
     include_no_movement: bool = True
+
+    # Joint locking: hold inactive joints at their episode-start positions
+    # to prevent gravity-induced drift during episodes
+    lock_inactive_joints: bool = True
+
+    # Randomize primary joint start position each episode for better range coverage
+    randomize_primary_start: bool = False
 
     # Movement parameters
     position_delta: float = 10.0
