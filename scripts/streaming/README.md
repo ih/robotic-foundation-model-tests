@@ -141,21 +141,22 @@ Streaming-recorded datasets are bit-compatible with what
   `observation.images.<wrist_name>`) and motor schemas
   (`action`, `observation.state` as 6-vector float32) are identical.
 
-## Phase 2 / 3 / 4
+## Phase status
 
-This is **Phase 1** only — standalone recorder + verifier on hardware. The
-follow-on phases live in `canvas-autonomous-learner`:
-
-- **Phase 2:** add `learner.explorer.collect_batch_continuous()` that
-  shells out to `record_continuous.py`, streams progress events, and
-  returns the same `dataset_path: Path` shape as today's `collect_batch`.
-  A new config flag `cadence.continuous_explore: true` selects between
-  legacy and streaming modes.
-- **Phase 3:** overnight A/B soak with two arms (one legacy, one
-  streaming), measuring wall time and val MSE convergence.
-- **Phase 4:** flip the default in `configs/simultaneous.yaml` and
-  `configs/sequential.yaml`, leave the legacy path as a one-cycle
-  fallback, then delete it.
+- **Phase 1 — done.** Standalone recorder + verifier on hardware
+  (this directory).
+- **Phase 2 — done.** `canvas-autonomous-learner` now has
+  `learner.explorer.collect_batch_continuous()` and a
+  `cadence.continuous_explore: true` config flag. The orchestrator
+  dispatches between the legacy episodic recorder and this streaming
+  recorder based on that flag. Verifier path always uses legacy
+  (streaming sequencer doesn't support `probe_script`). Default is
+  `false` in `configs/simultaneous.yaml` until Phase 3.
+- **Phase 3 — pending.** Overnight A/B soak with two arms (one legacy,
+  one streaming), measuring wall time and val MSE convergence.
+- **Phase 4 — pending.** Flip the default to `true` in the production
+  configs, leave the legacy path as a one-cycle fallback, then delete
+  it.
 
 ## Open items before Phase 2
 
