@@ -290,6 +290,7 @@ class StreamingConfig:
     fps: int
     action_duration: float
     settle_duration: float        # extra hold time after each action_duration
+    pre_action_settle_duration: float  # camera-flush + before-frame window
     verify_every: int             # 0 disables verification checkpoints
     push_to_hub: bool
     private_hub: bool
@@ -429,32 +430,49 @@ def run_streaming_session(
     base_key = f"observation.images.{hw_cfg.base_camera_name}"
     wrist_key = f"observation.images.{hw_cfg.wrist_camera_name}"
 
-    frames_per_action = max(1, int(round(
+    pre_settle_frames = max(0, int(round(
+        stream_cfg.pre_action_settle_duration * stream_cfg.fps
+    )))
+    action_frames = max(1, int(round(
         (stream_cfg.action_duration + stream_cfg.settle_duration) * stream_cfg.fps
     )))
+    total_frames_per_episode = pre_settle_frames + action_frames
     frame_period = 1.0 / float(stream_cfg.fps)
 
-    # If the caller pre-specifies a home, snap there before the first
-    # action so the run starts from a known pose. Otherwise just read
-    # the live state.
+    # `last_goal` is the most-recently commanded full motor target. Used
+    # as `action` parquet column during pre-settle frames, when no new
+    # goal has been issued yet for this episode but the motor is still
+    # holding the previous target.
+    initial_state = hw.read_motor_positions()
+    last_goal: dict[str, float] = dict(initial_state)
     if stream_cfg.starting_positions:
+        # Snap to the configured home before the first action so the run
+        # starts from a known pose. `last_goal` is updated to match so
+        # the first episode's pre-settle action vector reads as `home`,
+        # not the pre-snap state.
         try:
-            hw.send_goal(stream_cfg.starting_positions)
+            for k, v in stream_cfg.starting_positions.items():
+                last_goal[k] = float(v)
+            hw.send_goal(last_goal)
             time.sleep(1.5)  # one-time settle, not per-episode
         except Exception as e:
             logging.warning(f"starting-positions snap failed: {e}")
 
     session_start = time.perf_counter()
     for action_idx in range(num_actions):
+        # Decide the next target now, but DO NOT send the goal yet — the
+        # goal is sent at f_idx == pre_settle_frames so the camera buffer
+        # has time to flush during the pre-settle window. This makes the
+        # decision-bearing frame (the canvas builder's "before" image) a
+        # cleanly-captured snapshot of the motor at its previous-target
+        # pose, rather than a possibly-stale capture from when the motor
+        # had been idle for a long time (e.g. across the 1.5s home snap
+        # at session start).
         motor_positions = hw.read_motor_positions()
         target = sequencer.next_action(motor_positions)
 
-        # Build the full goal vector: hold all joints at current pos
-        # except the active one, which moves to target.
-        goal = dict(motor_positions)
-        goal[target.motor_name] = target.target_pos
-        hw.send_goal(goal)
-        action_send_t = time.perf_counter()
+        new_goal = dict(motor_positions)
+        new_goal[target.motor_name] = target.target_pos
 
         # Per-episode discrete action log file (matches legacy schema so
         # canvas-world-model's load_decision_bearing_logs picks it up).
@@ -465,14 +483,21 @@ def run_streaming_session(
         action_discrete = DIRECTION_TO_DISCRETE.get(target.direction, ACTION_HOLD)
 
         ep_start = time.perf_counter()
-        for f_idx in range(frames_per_action):
-            # Pace at fps. We don't sleep before the first frame so the
-            # action's effect is captured as quickly as possible.
+        for f_idx in range(total_frames_per_episode):
             if f_idx > 0:
                 next_t = ep_start + f_idx * frame_period
                 slack = next_t - time.perf_counter()
                 if slack > 0:
                     time.sleep(slack)
+
+            # Boundary frame: send the new goal BEFORE this frame's
+            # camera capture. State at this frame still reflects the
+            # previous target (motor has not moved yet — controller
+            # latency); the discrete-action log entry on this frame
+            # marks it as the canvas builder's "before" image and the
+            # decision point.
+            if f_idx == pre_settle_frames:
+                hw.send_goal(new_goal)
 
             base_frame, wrist_frame = hw.read_synced_frames()
             cur_state = hw.read_motor_positions()
@@ -480,8 +505,12 @@ def run_streaming_session(
                 [cur_state.get(j.replace(".pos", ""), 0.0) for j in SO101_JOINTS],
                 dtype=np.float32,
             )
+            # During pre-settle: motor commanded to last_goal (held over
+            # from the previous episode). After the boundary frame:
+            # commanded to new_goal.
+            cur_goal = new_goal if f_idx >= pre_settle_frames else last_goal
             action_vec = np.array(
-                [goal.get(j.replace(".pos", ""), state_vec[i])
+                [cur_goal.get(j.replace(".pos", ""), state_vec[i])
                  for i, j in enumerate(SO101_JOINTS)],
                 dtype=np.float32,
             )
@@ -495,9 +524,9 @@ def run_streaming_session(
             }
             dataset.add_frame(frame_dict)
 
-            # Discrete action: only the very first frame in this logical
-            # episode carries the actual decision; the rest are HOLD.
-            decision = action_discrete if f_idx == 0 else ACTION_HOLD
+            # Discrete action label lands on the boundary frame. All
+            # pre-settle and post-action frames are HOLD.
+            decision = action_discrete if f_idx == pre_settle_frames else ACTION_HOLD
             _append_action_log_entry(
                 log_path,
                 timestamp=time.time(),
@@ -506,11 +535,13 @@ def run_streaming_session(
             )
 
         dataset.save_episode()
+        last_goal = new_goal
         ep_wall = time.perf_counter() - ep_start
         logging.info(
             f"action {action_idx + 1}/{num_actions} "
             f"joint={target.motor_name} dir={target.direction} "
-            f"target={target.target_pos:.2f} frames={frames_per_action} "
+            f"target={target.target_pos:.2f} "
+            f"pre_settle={pre_settle_frames} action={action_frames} "
             f"wall={ep_wall:.2f}s"
         )
 
@@ -612,6 +643,14 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--settle-duration", type=float, default=0.0,
                    help="Extra hold time after action_duration. Default 0 "
                         "(back-to-back actions).")
+    p.add_argument("--pre-action-settle-duration", type=float, default=0.2,
+                   help="Pre-action camera-flush window. Frames captured "
+                        "during this window show the motor at the previous "
+                        "target; the decision-bearing frame (canvas 'before' "
+                        "image) lands at the END of this window. Default 0.2s "
+                        "(2 frames at 10fps). Set 0.0 to label the action on "
+                        "frame 0 (matches the original streaming behavior, "
+                        "but risks stale camera buffers on the first action).")
     p.add_argument("--fps", type=int, default=10,
                    help="Dataset fps. Should match --camera-fps.")
     p.add_argument("--verify-every", type=int, default=10,
@@ -695,6 +734,7 @@ def main() -> int:
         fps=args.fps,
         action_duration=args.action_duration,
         settle_duration=args.settle_duration,
+        pre_action_settle_duration=args.pre_action_settle_duration,
         verify_every=args.verify_every,
         push_to_hub=args.push_to_hub,
         private_hub=not args.public_hub,
