@@ -306,17 +306,22 @@ def _build_features(
 
     Specifically: action + observation.state are 6-vector float32 with
     SO-101 joint names; cameras are video-typed HxWx3.
+
+    Shapes are tuples (not lists) because `validate_frame` does a strict
+    `actual_shape != expected_shape` comparison against `value.shape`,
+    which is always a tuple. JSON serialization to `meta/info.json` will
+    flatten tuples to lists at write time.
     """
-    image_shape = [image_height, image_width, 3]
+    image_shape = (image_height, image_width, 3)
     return {
         "action": {
             "dtype": "float32",
-            "shape": [6],
+            "shape": (6,),
             "names": list(SO101_JOINTS),
         },
         "observation.state": {
             "dtype": "float32",
-            "shape": [6],
+            "shape": (6,),
             "names": list(SO101_JOINTS),
         },
         f"observation.images.{base_name}": {
