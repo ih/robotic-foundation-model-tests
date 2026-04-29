@@ -38,6 +38,13 @@ class ActionTarget:
     direction: str             # "positive" | "negative" | "none"
     target_pos: float          # absolute target in motor-space units
     magnitude: float           # signed delta from current_pos
+    # Optional forced starting position. When set, the recorder must
+    # snap the active joint to this value BEFORE the action's frames
+    # are captured. Used by VERIFY's probe-script mode to force each
+    # probe to start from a specific motor pose. None for the normal
+    # back-to-back streaming flow where the motor flows from wherever
+    # the previous action left it.
+    start_pos: float | None = None
 
     @property
     def task_description(self) -> str:
@@ -76,6 +83,7 @@ class ActionSequencer:
         position_delta: float,
         vary_target: bool = True,
         seed: int | None = None,
+        probe_script: list[dict] | None = None,
     ):
         if not joints:
             raise ValueError("joints pool must be non-empty")
@@ -91,6 +99,19 @@ class ActionSequencer:
         self.position_delta = float(position_delta)
         self.vary_target = bool(vary_target)
         self._rng = random.Random(seed)
+        # Probe-script mode: each entry forces a specific (start_pos,
+        # direction, joint?) for one upcoming action. Consumed in order;
+        # exhausted entries fall back to the random selection path. Used
+        # by VERIFY to drive error-weighted probes through the same
+        # streaming pipeline as EXPLORE so we have one camera-capture
+        # code path (no DSHOW buffer crosstalk in lerobot-record).
+        # Schema: [{"start_pos": float, "direction": "positive"|"negative"|"none",
+        #           "joint": "<joint>.pos" (optional, defaults to joints[0])}]
+        self._probe_script = list(probe_script or [])
+        self._probe_index = 0
+
+    def has_probe_script(self) -> bool:
+        return self._probe_index < len(self._probe_script)
 
     def next_action(self, motor_positions: dict[str, float]) -> ActionTarget:
         """Pick the next action target from the current motor state.
@@ -99,6 +120,47 @@ class ActionSequencer:
             motor_positions: dict of `motor_name -> current_pos` (no `.pos`
                 suffix), as returned by `bus.sync_read("Present_Position")`.
         """
+        # Probe-script mode: consume the next forced (start_pos, direction).
+        # The recorder snaps the motor to start_pos before capturing this
+        # action's frames; the target is derived from start_pos + sign *
+        # position_delta, NOT from current_pos.
+        if self._probe_index < len(self._probe_script):
+            entry = self._probe_script[self._probe_index]
+            self._probe_index += 1
+            joint = str(entry.get("joint") or self.joints[0])
+            if joint not in self.joint_ranges:
+                raise ValueError(
+                    f"probe-script joint {joint!r} missing from joint_ranges"
+                )
+            motor_name = joint.replace(".pos", "")
+            joint_index = self.joint_indices[joint]
+            lo, hi = self.joint_ranges[joint]
+
+            start_pos = float(entry["start_pos"])
+            # Clamp the FORCED start to the safe range — the verifier
+            # picks via pick_probe_state which can pick edge bins.
+            start_pos = max(lo, min(hi, start_pos))
+            direction = str(entry.get("direction", "positive"))
+
+            if direction == "none":
+                target = start_pos
+                magnitude = 0.0
+            else:
+                sign = 1.0 if direction == "positive" else -1.0
+                target = start_pos + sign * self.position_delta
+                target = max(lo, min(hi, target))
+                magnitude = target - start_pos
+
+            return ActionTarget(
+                joint=joint,
+                motor_name=motor_name,
+                joint_index=joint_index,
+                direction=direction,
+                target_pos=float(target),
+                magnitude=float(magnitude),
+                start_pos=float(start_pos),
+            )
+
         joint = (
             self._rng.choice(self.joints) if self.vary_target else self.joints[0]
         )

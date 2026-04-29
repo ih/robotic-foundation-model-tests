@@ -390,6 +390,7 @@ def run_streaming_session(
         joints=seq_cfg["joints"],
         joint_ranges=seq_cfg["joint_ranges"],
         joint_indices=JOINT_INDEX,
+        probe_script=seq_cfg.get("probe_script"),
         position_delta=seq_cfg["position_delta"],
         vary_target=seq_cfg["vary_target"],
         seed=seq_cfg.get("seed"),
@@ -470,6 +471,29 @@ def run_streaming_session(
         # at session start).
         motor_positions = hw.read_motor_positions()
         target = sequencer.next_action(motor_positions)
+
+        # Probe-script mode: each entry forces a specific (start_pos,
+        # direction) for one action. Snap the active joint to start_pos
+        # BEFORE recording this episode's frames so the model sees a
+        # consistent "before" pose for the probe. This replaces the
+        # legacy verifier's per-episode reset that used to live in
+        # run_single_action_record.py's reset-phase patch.
+        if target.start_pos is not None:
+            snap_goal = dict(motor_positions)
+            snap_goal[target.motor_name] = target.start_pos
+            try:
+                hw.send_goal(snap_goal)
+                # 1.0s settle: enough for a 100-unit move at default
+                # SO-101 speeds. Verifier probes typically hop ~10-30
+                # units between consecutive starts.
+                time.sleep(1.0)
+                # Update motor_positions to reflect the post-snap pose
+                # so new_goal below is built relative to the FORCED
+                # start, not the pre-snap pose.
+                motor_positions = hw.read_motor_positions()
+                last_goal = dict(snap_goal)
+            except Exception as e:
+                logging.warning(f"probe snap to start_pos={target.start_pos} failed: {e}")
 
         new_goal = dict(motor_positions)
         new_goal[target.motor_name] = target.target_pos
@@ -680,6 +704,18 @@ def _parse_args() -> argparse.Namespace:
                    help="Make the pushed dataset public. Default is private.")
 
     # Initial pose
+    p.add_argument("--probe-script-json", default=None,
+                   help="JSON list of probe-script entries: each entry is "
+                        '{"start_pos": float, "direction": "positive"|"negative"|"none", '
+                        '"joint": "<joint>.pos" (optional)}. The sequencer '
+                        "consumes one entry per action (in order); each "
+                        "entry forces the active joint to snap to start_pos "
+                        "before that action's frames are captured. "
+                        "Used by the autonomous learner's VERIFY phase to "
+                        "drive error-weighted probes through the same "
+                        "streaming pipeline as EXPLORE. Exhausted entries "
+                        "fall back to the random selection path.")
+
     p.add_argument("--starting-positions-json", default=None,
                    help="JSON dict of motor_name -> position for a one-shot "
                         "snap-to-home before action 0. Skipped if omitted.")
@@ -720,12 +756,19 @@ def main() -> int:
             raise SystemExit(f"unknown joint {j!r}; expected one of {SO101_JOINTS}")
     joint_ranges = _parse_joint_ranges(args.joint_range, joints)
 
+    probe_script = None
+    if args.probe_script_json:
+        probe_script = json.loads(args.probe_script_json)
+        if not isinstance(probe_script, list):
+            raise SystemExit("--probe-script-json must be a JSON array")
+
     seq_cfg = {
         "joints": joints,
         "joint_ranges": joint_ranges,
         "position_delta": args.position_delta,
         "vary_target": not args.no_vary_target and len(joints) > 1,
         "seed": args.seed,
+        "probe_script": probe_script,
     }
 
     stream_cfg = StreamingConfig(
